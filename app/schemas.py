@@ -1,3 +1,5 @@
+import base64
+import binascii
 import re
 from datetime import datetime, timezone
 
@@ -5,12 +7,17 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, fie
 
 
 # A contact photo travels as a self-contained data URL so the in-memory database
-# stays the only storage the app needs. 2 MiB of base64 is roughly a 1.5 MB
-# image — ample for an avatar, small enough to keep payloads sane.
-PHOTO_MAX_CHARS = 2 * 1024 * 1024
+# stays the only storage the app needs.
+#
+# The cap is deliberately tight. `ContactRead` carries the photo, and the list
+# endpoint serves up to `MAX_LIMIT` contacts per page, so the per-photo ceiling
+# is really a per-*page* ceiling multiplied by 200. At 256 KiB a full page of
+# photos is bounded at ~50 MiB worst case, and the client downscales before
+# uploading, so a realistic avatar lands two orders of magnitude under the cap.
+PHOTO_MAX_CHARS = 256 * 1024
 PHOTO_ALLOWED_TYPES = ("png", "jpeg", "gif", "webp")
 _PHOTO_DATA_URL = re.compile(
-    rf"^data:image/(?:{'|'.join(PHOTO_ALLOWED_TYPES)});base64,[A-Za-z0-9+/]+={{0,2}}$"
+    rf"^data:image/(?:{'|'.join(PHOTO_ALLOWED_TYPES)});base64,(?P<data>[A-Za-z0-9+/]+={{0,2}})$"
 )
 
 PHOTO_DESCRIPTION = (
@@ -34,10 +41,22 @@ def normalize_photo(value: str | None) -> str | None:
     if len(value) > PHOTO_MAX_CHARS:
         raise ValueError(f"Photo must be {PHOTO_MAX_CHARS // 1024} KiB or smaller once base64-encoded")
 
-    if not _PHOTO_DATA_URL.fullmatch(value):
+    match = _PHOTO_DATA_URL.fullmatch(value)
+    if match is None:
         raise ValueError(
             "Photo must be a base64 data URL of type " + ", ".join(PHOTO_ALLOWED_TYPES)
         )
+
+    # The pattern only proves the payload uses the base64 alphabet. Decoding is
+    # what proves it is actually decodable — "A" satisfies the alphabet but is
+    # not a whole base64 group, and would be stored as an unusable image.
+    try:
+        decoded = base64.b64decode(match.group("data"), validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("Photo is not valid base64 data") from exc
+
+    if not decoded:
+        raise ValueError("Photo contains no image data")
 
     return value
 

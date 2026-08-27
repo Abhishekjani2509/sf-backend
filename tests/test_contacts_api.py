@@ -185,8 +185,19 @@ def test_photo_rejects_disallowed_media_type(client, payload):
 
 
 def test_photo_rejects_oversized_payload(client, payload):
-    oversized = "data:image/png;base64," + ("A" * (2 * 1024 * 1024))
+    oversized = "data:image/png;base64," + ("A" * (256 * 1024))
     response = client.post(BASE, json={**payload, "photo": oversized})
+    assert response.status_code == 422
+
+
+def test_photo_rejects_undecodable_base64(client, payload):
+    """The alphabet alone is not enough — "A" is not a whole base64 group."""
+    response = client.post(BASE, json={**payload, "photo": "data:image/png;base64,A"})
+    assert response.status_code == 422
+
+
+def test_photo_rejects_empty_payload(client, payload):
+    response = client.post(BASE, json={**payload, "photo": "data:image/png;base64,===="})
     assert response.status_code == 422
 
 
