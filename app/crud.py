@@ -1,8 +1,12 @@
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from app.models import _utcnow
+
 from app.models import Address, Contact
-from app.schemas import AddressCreate, ContactCreate, ContactReplace, ContactUpdate
+from app.schemas import ContactCreate, ContactReplace, ContactUpdate
+
+_UNSET = object()
 
 SORTABLE_FIELDS = ("id", "first_name", "last_name", "email", "company", "created_at", "updated_at")
 
@@ -65,20 +69,6 @@ def list_contacts(
     return list(items), total
 
 
-def _build_addresses(payloads: list[AddressCreate]) -> list[Address]:
-    return [Address(**payload.model_dump()) for payload in payloads]
-
-
-def _set_addresses(contact: Contact, payloads: list[AddressCreate]) -> None:
-    """Replace a contact's addresses wholesale.
-
-    Assigning to the collection lets `delete-orphan` remove the rows that fell
-    out, so no address is left behind pointing at a contact that no longer
-    references it.
-    """
-    contact.addresses = _build_addresses(payloads)
-
-
 def create_contact(db: Session, payload: ContactCreate) -> Contact:
     data = payload.model_dump()
     addresses = data.pop("addresses", [])
@@ -93,13 +83,24 @@ def create_contact(db: Session, payload: ContactCreate) -> Contact:
     return contact
 
 
+def _set_addresses(contact: Contact, payloads: list[dict]) -> None:
+    """Replace a contact's addresses and mark the contact itself as modified.
+
+    Mutating only the child rows leaves `contacts.updated_at` untouched, because
+    the ORM's `onupdate` fires on a change to the parent row. Touching it here
+    keeps the timestamp honest when an edit changes nothing but addresses.
+    """
+    contact.addresses = [Address(**address) for address in payloads]
+    contact.updated_at = _utcnow()
+
+
 def replace_contact(db: Session, contact: Contact, payload: ContactReplace) -> Contact:
     data = payload.model_dump()
     addresses = data.pop("addresses", [])
 
     for field, value in data.items():
         setattr(contact, field, _normalize_email(value) if field == "email" else value)
-    contact.addresses = [Address(**address) for address in addresses]
+    _set_addresses(contact, addresses)
 
     db.commit()
     db.refresh(contact)
@@ -108,14 +109,17 @@ def replace_contact(db: Session, contact: Contact, payload: ContactReplace) -> C
 
 def update_contact(db: Session, contact: Contact, payload: ContactUpdate) -> Contact:
     data = payload.model_dump(exclude_unset=True)
-    # `None` means "not sent" here, which is why PATCH cannot clear the set;
-    # send an empty list to do that.
-    addresses = data.pop("addresses", None)
+    # `exclude_unset` distinguishes "not sent" from an explicit `null`: an
+    # omitted key is absent from the dump entirely, so the sentinel is what
+    # separates "leave them alone" from "clear them".
+    addresses = data.pop("addresses", _UNSET)
 
     for field, value in data.items():
         setattr(contact, field, _normalize_email(value) if field == "email" else value)
-    if addresses is not None:
-        contact.addresses = [Address(**address) for address in addresses]
+    if addresses is not _UNSET:
+        # Both `null` and `[]` mean "no addresses", matching how every other
+        # optional field treats an explicit null as a clear.
+        _set_addresses(contact, addresses or [])
 
     db.commit()
     db.refresh(contact)

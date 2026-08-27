@@ -371,3 +371,18 @@ def test_search_reaches_into_addresses(client, payload):
     response = client.get(BASE, params={"search": "London"})
     assert response.status_code == 200
     assert response.json()["total"] == 1
+
+
+def test_patch_null_addresses_clears_them(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME, WORK]}).json()["id"]
+
+    response = client.patch(f"{BASE}/{contact_id}", json={"addresses": None})
+    assert response.status_code == 200
+    assert response.json()["addresses"] == []
+
+
+def test_address_only_change_bumps_updated_at(client, payload):
+    created = client.post(BASE, json={**payload, "addresses": [HOME]}).json()
+
+    updated = client.patch(f"{BASE}/{created['id']}", json={"addresses": [WORK]}).json()
+    assert updated["updated_at"] > created["updated_at"]

@@ -108,16 +108,39 @@ also read):
 
 ```
 first_name, last_name, email, phone, company, job_title,
-address, city, state, postal_code, country, notes
+photo, notes, addresses
 ```
 
 Responses add `id`, `full_name`, `created_at`, and `updated_at` (UTC).
+
+`photo` is a base64 image data URL (png, jpeg, gif, or webp), capped at
+256 KiB once encoded. Omit it to fall back to the contact's initials.
+
+#### Addresses
+
+A contact holds any number of addresses, each in its own record rather than
+flattened onto the contact:
+
+```jsonc
+"addresses": [
+  { "type": "home", "street": "12 Ockham Rd", "city": "London", "country": "UK" },
+  { "type": "work", "street": "1 Market St", "city": "San Francisco",
+    "state": "CA", "postal_code": "94105", "country": "USA" }
+]
+```
+
+`type` is one of `home`, `work`, or `other` and defaults to `home`; every other
+part is optional. Responses add `id` and `contact_id` to each entry.
+
+`PUT` replaces the whole set, so an omitted `addresses` clears it. `PATCH`
+leaves the set untouched unless `addresses` is sent, where both `[]` and `null`
+clear it.
 
 ### List query parameters
 
 | Param | Default | Notes |
 | --- | --- | --- |
-| `search` | – | Case-insensitive substring match on name, email, company, phone |
+| `search` | – | Case-insensitive substring match on name, email, company, phone, and address city/country |
 | `limit` | `50` | 1–200 |
 | `offset` | `0` | |
 | `sort_by` | `id` | `id`, `first_name`, `last_name`, `email`, `company`, `created_at`, `updated_at` |
