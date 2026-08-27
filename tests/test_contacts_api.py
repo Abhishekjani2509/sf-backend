@@ -144,3 +144,132 @@ def test_delete_contact(client, payload):
 def test_root_lists_entrypoints(client):
     body = client.get("/").json()
     assert body["contacts"] == BASE
+
+
+# --------------------------------------------------------------------------- #
+# Contact photo                                                               #
+# --------------------------------------------------------------------------- #
+
+PNG_PIXEL = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA"
+    "DUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
+def test_contact_defaults_to_no_photo(client, payload):
+    response = client.post(BASE, json=payload)
+    assert response.status_code == 201
+    assert response.json()["photo"] is None
+
+
+def test_create_contact_with_photo(client, payload):
+    response = client.post(BASE, json={**payload, "photo": PNG_PIXEL})
+    assert response.status_code == 201
+    assert response.json()["photo"] == PNG_PIXEL
+
+
+def test_blank_photo_is_stored_as_null(client, payload):
+    response = client.post(BASE, json={**payload, "photo": "   "})
+    assert response.status_code == 201
+    assert response.json()["photo"] is None
+
+
+def test_photo_must_be_an_image_data_url(client, payload):
+    response = client.post(BASE, json={**payload, "photo": "https://example.com/ada.png"})
+    assert response.status_code == 422
+
+
+def test_photo_rejects_disallowed_media_type(client, payload):
+    response = client.post(BASE, json={**payload, "photo": "data:application/pdf;base64,AAAA"})
+    assert response.status_code == 422
+
+
+def test_photo_rejects_oversized_payload(client, payload):
+    oversized = "data:image/png;base64," + ("A" * (256 * 1024))
+    response = client.post(BASE, json={**payload, "photo": oversized})
+    assert response.status_code == 422
+
+
+def test_photo_rejects_undecodable_base64(client, payload):
+    """The alphabet alone is not enough — "A" is not a whole base64 group."""
+    response = client.post(BASE, json={**payload, "photo": "data:image/png;base64,A"})
+    assert response.status_code == 422
+
+
+def test_photo_rejects_empty_payload(client, payload):
+    response = client.post(BASE, json={**payload, "photo": "data:image/png;base64,===="})
+    assert response.status_code == 422
+
+
+def test_photo_rejects_non_image_bytes(client, payload):
+    """Valid base64 that decodes to "Hello" is not a PNG."""
+    response = client.post(BASE, json={**payload, "photo": "data:image/png;base64,SGVsbG8="})
+    assert response.status_code == 422
+
+
+def test_photo_rejects_media_type_mismatch(client, payload):
+    """A real PNG payload declared as a JPEG is a lie worth rejecting."""
+    png_as_jpeg = PNG_PIXEL.replace("data:image/png", "data:image/jpeg")
+    response = client.post(BASE, json={**payload, "photo": png_as_jpeg})
+    assert response.status_code == 422
+
+
+def test_photo_accepts_each_allowed_type(client, payload):
+    import base64 as _b64
+
+    samples = {
+        "jpeg": b"\xff\xd8\xff\xdb" + b"\x00" * 8,
+        "gif": b"GIF89a" + b"\x00" * 8,
+        "webp": b"RIFF\x00\x00\x00\x00WEBP" + b"\x00" * 4,
+    }
+    for index, (media, raw) in enumerate(samples.items()):
+        encoded = _b64.b64encode(raw).decode()
+        response = client.post(
+            BASE,
+            json={
+                **payload,
+                "email": f"{media}@example.com",
+                "photo": f"data:image/{media};base64,{encoded}",
+            },
+        )
+        assert response.status_code == 201, (media, response.text)
+        assert response.json()["photo"].startswith(f"data:image/{media};base64,")
+
+
+def test_patch_preserves_photo_when_not_sent(client, payload):
+    contact_id = client.post(BASE, json={**payload, "photo": PNG_PIXEL}).json()["id"]
+
+    response = client.patch(f"{BASE}/{contact_id}", json={"job_title": "Countess"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["job_title"] == "Countess"
+    assert body["photo"] == PNG_PIXEL
+
+
+def test_patch_can_clear_photo(client, payload):
+    contact_id = client.post(BASE, json={**payload, "photo": PNG_PIXEL}).json()["id"]
+
+    response = client.patch(f"{BASE}/{contact_id}", json={"photo": None})
+    assert response.status_code == 200
+    assert response.json()["photo"] is None
+
+
+def test_put_without_photo_clears_it(client, payload):
+    """PUT is a full replacement, so an omitted photo is intentionally dropped.
+
+    The UI must therefore round-trip the existing photo through its edit form —
+    see the hidden `photo` input in `ContactPhotoField`.
+    """
+    contact_id = client.post(BASE, json={**payload, "photo": PNG_PIXEL}).json()["id"]
+
+    response = client.put(f"{BASE}/{contact_id}", json=payload)
+    assert response.status_code == 200
+    assert response.json()["photo"] is None
+
+
+def test_put_round_trips_photo(client, payload):
+    contact_id = client.post(BASE, json={**payload, "photo": PNG_PIXEL}).json()["id"]
+
+    response = client.put(f"{BASE}/{contact_id}", json={**payload, "photo": PNG_PIXEL})
+    assert response.status_code == 200
+    assert response.json()["photo"] == PNG_PIXEL
