@@ -17,8 +17,26 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, fie
 PHOTO_MAX_CHARS = 256 * 1024
 PHOTO_ALLOWED_TYPES = ("png", "jpeg", "gif", "webp")
 _PHOTO_DATA_URL = re.compile(
-    rf"^data:image/(?:{'|'.join(PHOTO_ALLOWED_TYPES)});base64,(?P<data>[A-Za-z0-9+/]+={{0,2}})$"
+    rf"^data:image/(?P<media>{'|'.join(PHOTO_ALLOWED_TYPES)});base64,(?P<data>[A-Za-z0-9+/]+={{0,2}})$"
 )
+
+def _detect_image_type(data: bytes) -> str | None:
+    """Identify an image from its magic bytes, or return None if it is not one.
+
+    Deliberately signature-based rather than a full decode: the goal is to prove
+    the bytes are the image type they claim to be, which does not justify pulling
+    an image-processing dependency into a contacts API.
+    """
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return None
+
 
 PHOTO_DESCRIPTION = (
     "Profile photo as a base64 data URL, e.g. `data:image/png;base64,...`. "
@@ -47,6 +65,8 @@ def normalize_photo(value: str | None) -> str | None:
             "Photo must be a base64 data URL of type " + ", ".join(PHOTO_ALLOWED_TYPES)
         )
 
+    declared = match.group("media")
+
     # The pattern only proves the payload uses the base64 alphabet. Decoding is
     # what proves it is actually decodable — "A" satisfies the alphabet but is
     # not a whole base64 group, and would be stored as an unusable image.
@@ -57,6 +77,15 @@ def normalize_photo(value: str | None) -> str | None:
 
     if not decoded:
         raise ValueError("Photo contains no image data")
+
+    # Decoding proves the payload is base64; it does not prove it is an image.
+    # Without this, `data:image/png;base64,SGVsbG8=` ("Hello") would be stored
+    # and served as a photo that no client can render.
+    detected = _detect_image_type(decoded)
+    if detected is None:
+        raise ValueError("Photo is not a recognised image")
+    if detected != declared:
+        raise ValueError(f"Photo is declared as {declared} but its contents are {detected}")
 
     return value
 

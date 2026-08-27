@@ -201,6 +201,41 @@ def test_photo_rejects_empty_payload(client, payload):
     assert response.status_code == 422
 
 
+def test_photo_rejects_non_image_bytes(client, payload):
+    """Valid base64 that decodes to "Hello" is not a PNG."""
+    response = client.post(BASE, json={**payload, "photo": "data:image/png;base64,SGVsbG8="})
+    assert response.status_code == 422
+
+
+def test_photo_rejects_media_type_mismatch(client, payload):
+    """A real PNG payload declared as a JPEG is a lie worth rejecting."""
+    png_as_jpeg = PNG_PIXEL.replace("data:image/png", "data:image/jpeg")
+    response = client.post(BASE, json={**payload, "photo": png_as_jpeg})
+    assert response.status_code == 422
+
+
+def test_photo_accepts_each_allowed_type(client, payload):
+    import base64 as _b64
+
+    samples = {
+        "jpeg": b"\xff\xd8\xff\xdb" + b"\x00" * 8,
+        "gif": b"GIF89a" + b"\x00" * 8,
+        "webp": b"RIFF\x00\x00\x00\x00WEBP" + b"\x00" * 4,
+    }
+    for index, (media, raw) in enumerate(samples.items()):
+        encoded = _b64.b64encode(raw).decode()
+        response = client.post(
+            BASE,
+            json={
+                **payload,
+                "email": f"{media}@example.com",
+                "photo": f"data:image/{media};base64,{encoded}",
+            },
+        )
+        assert response.status_code == 201, (media, response.text)
+        assert response.json()["photo"].startswith(f"data:image/{media};base64,")
+
+
 def test_patch_preserves_photo_when_not_sent(client, payload):
     contact_id = client.post(BASE, json={**payload, "photo": PNG_PIXEL}).json()["id"]
 
