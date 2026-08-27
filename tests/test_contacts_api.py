@@ -273,3 +273,101 @@ def test_put_round_trips_photo(client, payload):
     response = client.put(f"{BASE}/{contact_id}", json={**payload, "photo": PNG_PIXEL})
     assert response.status_code == 200
     assert response.json()["photo"] == PNG_PIXEL
+
+
+# --------------------------------------------------------------------------- #
+# Multiple addresses                                                          #
+# --------------------------------------------------------------------------- #
+
+HOME = {"type": "home", "street": "12 Ockham Rd", "city": "London", "country": "UK"}
+WORK = {"type": "work", "street": "1 Market St", "city": "San Francisco", "state": "CA"}
+
+
+def test_contact_can_hold_several_addresses(client, payload):
+    response = client.post(BASE, json={**payload, "addresses": [HOME, WORK]})
+    assert response.status_code == 201
+
+    addresses = response.json()["addresses"]
+    assert [a["type"] for a in addresses] == ["home", "work"]
+    assert [a["city"] for a in addresses] == ["London", "San Francisco"]
+
+
+def test_addresses_default_to_empty(client, payload):
+    response = client.post(BASE, json={**payload, "addresses": []})
+    assert response.status_code == 201
+    assert response.json()["addresses"] == []
+
+
+def test_each_address_links_back_to_its_contact(client, payload):
+    body = client.post(BASE, json={**payload, "addresses": [HOME, WORK]}).json()
+
+    assert {a["contact_id"] for a in body["addresses"]} == {body["id"]}
+    assert len({a["id"] for a in body["addresses"]}) == 2
+
+
+def test_address_type_is_constrained(client, payload):
+    response = client.post(BASE, json={**payload, "addresses": [{**HOME, "type": "holiday"}]})
+    assert response.status_code == 422
+
+
+def test_many_addresses_of_the_same_type_are_allowed(client, payload):
+    """Two work addresses is a normal thing, not a validation error."""
+    response = client.post(BASE, json={**payload, "addresses": [WORK, {**WORK, "city": "Oakland"}]})
+    assert response.status_code == 201
+    assert [a["city"] for a in response.json()["addresses"]] == ["San Francisco", "Oakland"]
+
+
+def test_put_replaces_the_whole_address_set(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME, WORK]}).json()["id"]
+
+    response = client.put(f"{BASE}/{contact_id}", json={**payload, "addresses": [HOME]})
+    assert response.status_code == 200
+    assert [a["type"] for a in response.json()["addresses"]] == ["home"]
+
+
+def test_patch_leaves_addresses_alone_when_not_sent(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME, WORK]}).json()["id"]
+
+    response = client.patch(f"{BASE}/{contact_id}", json={"job_title": "Countess"})
+    assert response.status_code == 200
+    assert len(response.json()["addresses"]) == 2
+
+
+def test_patch_can_clear_addresses_with_an_empty_list(client, payload):
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME]}).json()["id"]
+
+    response = client.patch(f"{BASE}/{contact_id}", json={"addresses": []})
+    assert response.status_code == 200
+    assert response.json()["addresses"] == []
+
+
+def test_replaced_addresses_do_not_linger(client, payload):
+    """delete-orphan must remove the old rows, not just detach them."""
+    from app.database import SessionLocal
+    from app.models import Address
+
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME, WORK]}).json()["id"]
+    client.put(f"{BASE}/{contact_id}", json={**payload, "addresses": [HOME]})
+
+    with SessionLocal() as db:
+        assert db.query(Address).count() == 1
+
+
+def test_deleting_a_contact_deletes_its_addresses(client, payload):
+    from app.database import SessionLocal
+    from app.models import Address
+
+    contact_id = client.post(BASE, json={**payload, "addresses": [HOME, WORK]}).json()["id"]
+    assert client.delete(f"{BASE}/{contact_id}").status_code == 204
+
+    with SessionLocal() as db:
+        assert db.query(Address).count() == 0
+
+
+def test_search_reaches_into_addresses(client, payload):
+    client.post(BASE, json={**payload, "addresses": [HOME]})
+    client.post(BASE, json={**payload, "email": "b@example.com", "addresses": [WORK]})
+
+    response = client.get(BASE, params={"search": "London"})
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
