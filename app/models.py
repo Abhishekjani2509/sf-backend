@@ -29,6 +29,8 @@ class Contact(Base):
     postal_code: Mapped[str | None] = mapped_column(String(20))
     country: Mapped[str | None] = mapped_column(String(120))
 
+    photo: Mapped[str | None] = mapped_column(Text)
+
     notes: Mapped[str | None] = mapped_column(Text)
 
     created_at: Mapped[datetime] = mapped_column(

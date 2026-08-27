@@ -1,6 +1,45 @@
+import re
 from datetime import datetime, timezone
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
+
+
+# A contact photo travels as a self-contained data URL so the in-memory database
+# stays the only storage the app needs. 2 MiB of base64 is roughly a 1.5 MB
+# image — ample for an avatar, small enough to keep payloads sane.
+PHOTO_MAX_CHARS = 2 * 1024 * 1024
+PHOTO_ALLOWED_TYPES = ("png", "jpeg", "gif", "webp")
+_PHOTO_DATA_URL = re.compile(
+    rf"^data:image/(?:{'|'.join(PHOTO_ALLOWED_TYPES)});base64,[A-Za-z0-9+/]+={{0,2}}$"
+)
+
+PHOTO_DESCRIPTION = (
+    "Profile photo as a base64 data URL, e.g. `data:image/png;base64,...`. "
+    f"Allowed types: {', '.join(PHOTO_ALLOWED_TYPES)}. "
+    f"Maximum {PHOTO_MAX_CHARS // 1024} KiB once encoded. "
+    "Omit or send `null` to fall back to the contact's initials."
+)
+PHOTO_EXAMPLE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+
+
+def normalize_photo(value: str | None) -> str | None:
+    """Validate a photo data URL, treating blank input as "no photo"."""
+    if value is None:
+        return None
+
+    value = value.strip()
+    if not value:
+        return None
+
+    if len(value) > PHOTO_MAX_CHARS:
+        raise ValueError(f"Photo must be {PHOTO_MAX_CHARS // 1024} KiB or smaller once base64-encoded")
+
+    if not _PHOTO_DATA_URL.fullmatch(value):
+        raise ValueError(
+            "Photo must be a base64 data URL of type " + ", ".join(PHOTO_ALLOWED_TYPES)
+        )
+
+    return value
 
 
 class ContactBase(BaseModel):
@@ -64,11 +103,21 @@ class ContactBase(BaseModel):
         examples=["94105"],
     )
     country: str | None = Field(default=None, max_length=120, description="Country name.", examples=["USA"])
+    photo: str | None = Field(
+        default=None,
+        description=PHOTO_DESCRIPTION,
+        examples=[PHOTO_EXAMPLE],
+    )
     notes: str | None = Field(
         default=None,
         description="Free-form notes about the contact. No length limit.",
         examples=["Met at the SF hackathon."],
     )
+
+    @field_validator("photo")
+    @classmethod
+    def _check_photo(cls, value: str | None) -> str | None:
+        return normalize_photo(value)
 
 
 _FULL_EXAMPLE = {
@@ -133,7 +182,13 @@ class ContactUpdate(BaseModel):
     state: str | None = Field(default=None, max_length=120, description="New state or region.")
     postal_code: str | None = Field(default=None, max_length=20, description="New postal code.")
     country: str | None = Field(default=None, max_length=120, description="New country.")
+    photo: str | None = Field(default=None, description="New photo; send `null` to remove it.")
     notes: str | None = Field(default=None, description="New notes; replaces the existing text.")
+
+    @field_validator("photo")
+    @classmethod
+    def _check_photo(cls, value: str | None) -> str | None:
+        return normalize_photo(value)
 
 
 class ContactRead(ContactBase):
